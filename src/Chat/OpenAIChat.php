@@ -52,9 +52,9 @@ class OpenAIChat implements ChatInterface
     public function generateText(string $prompt): string
     {
         $answer = $this->generate($prompt);
-        $this->handleTools($answer);
+        $callResults = $this->handleTools($answer);
 
-        return $answer->choices[0]->message->content ?? '';
+        return $answer->choices[0]->message->content ?? json_encode($callResults, JSON_THROW_ON_ERROR);
     }
 
     public function generateTextOrReturnFunctionCalled(string $prompt): string|FunctionInfo
@@ -235,17 +235,26 @@ class OpenAIChat implements ChatInterface
     }
 
     /**
+     * @return array<array<string, mixed>>
+     *
      * @throws \JsonException
      */
-    private function handleTools(CreateResponse $answer): void
+    private function handleTools(CreateResponse $answer): array
     {
+        $callResults = [];
         /** @var CreateResponseToolCall $toolCall */
         foreach ($answer->choices[0]->message->toolCalls as $toolCall) {
             $functionName = $toolCall->function->name;
             $arguments = $toolCall->function->arguments;
 
-            $this->callFunction($functionName, $arguments);
+            $callResults[] = [
+                'name' => $functionName,
+                'args' => json_decode($arguments, true, 512, JSON_THROW_ON_ERROR),
+                'result' => $this->callFunction($functionName, $arguments),
+            ];
         }
+
+        return $callResults;
     }
 
     /**
@@ -283,11 +292,13 @@ class OpenAIChat implements ChatInterface
         throw new Exception("OpenAI tried to call $functionName which doesn't exist");
     }
 
-    private function callFunction(string $functionName, string $arguments): void
+    private function callFunction(string $functionName, string $arguments): mixed
     {
         $arguments = json_decode($arguments, true, 512, JSON_THROW_ON_ERROR);
         $functionToCall = $this->getFunctionInfoFromName($functionName);
-        $functionToCall->instance->{$functionToCall->name}(...$arguments);
+        $result = $functionToCall->instance->{$functionToCall->name}(...$arguments);
         $this->lastFunctionCalled = $functionToCall;
+
+        return $result;
     }
 }
